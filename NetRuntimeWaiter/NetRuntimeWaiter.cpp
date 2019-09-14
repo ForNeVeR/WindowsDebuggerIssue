@@ -1,7 +1,5 @@
 #include <iostream>
 #include <string>
-#include <vector>
-#include <cstddef>
 
 #include <Windows.h>
 
@@ -36,17 +34,6 @@ void terminateProcess(PROCESS_INFORMATION processInformation)
 	std::cout << "Terminate process " << processInformation.dwProcessId << (result ? " success" : " error") << std::endl;
 }
 
-void resumeThread(DWORD threadId)
-{
-	auto handle = OpenThread(THREAD_SUSPEND_RESUME, false, threadId);
-	if (handle == nullptr)
-		throw std::runtime_error(std::string("OpenThread error ") + std::to_string(GetLastError()));
-	if (ResumeThread(handle) == (DWORD)-1)
-		throw std::runtime_error(std::string("ResumeThread error ") + std::to_string(GetLastError()));
-	if (CloseHandle(handle) == 0)
-		throw std::runtime_error(std::string("CloseHandle error ") + std::to_string(GetLastError()));
-}
-
 bool debugProcessLoop()
 {
 	DEBUG_EVENT debugEvent = {};
@@ -54,7 +41,6 @@ bool debugProcessLoop()
 	while (WaitForDebugEvent(&debugEvent, INFINITE))
 	{
 		std::cout << "DebugEvent: " << debugEvent.dwDebugEventCode << " (thread: " << debugEvent.dwThreadId << ")" << std::endl;
-		auto continueStatus = DBG_CONTINUE;
 		switch (debugEvent.dwDebugEventCode)
 		{
 		case OUTPUT_DEBUG_STRING_EVENT:
@@ -106,6 +92,8 @@ bool debugProcessLoop()
 			return false;
 		}
 	}
+
+	return false;
 }
 
 bool debugProcess(PROCESS_INFORMATION processInformation)
@@ -113,6 +101,12 @@ bool debugProcess(PROCESS_INFORMATION processInformation)
 	if (!DebugActiveProcess(processInformation.dwProcessId))
 	{
 		std::cout << "DebugActiveProcess error: " << GetLastError() << std::endl;
+		return false;
+	}
+
+	if (ResumeThread(processInformation.hThread) == (DWORD)-1)
+	{
+		std::cout << "ResumeThread error: " << GetLastError() << std::endl;
 		return false;
 	}
 
@@ -138,5 +132,5 @@ int main()
 		terminateProcess(processInformation);
 	}
 
-	std::cout << "All tests finished. Success = " << successCount << ", failure = " << failureCount << std::endl;
+	std::cerr << "All tests finished. Success = " << successCount << ", failure = " << failureCount << std::endl;
 }
