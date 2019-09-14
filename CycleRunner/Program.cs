@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Diagnostics;
+using System.IO;
+using System.Reflection;
 
 namespace CycleRunner
 {
@@ -7,17 +9,19 @@ namespace CycleRunner
     {
         public static int Main(string[] args)
         {
-            var program = @"C:/work/NetRuntimeWaiter/Debug/NetRuntimeWaiter.exe";
+            var binaryDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            var solutionDir = Path.GetFullPath(Path.Combine(binaryDirectory, "../../.."));
+            var targetProgram = Path.Combine(solutionDir, "Debug/NetRuntimeWaiter.exe");
             for (int i = 0; i < 100000; ++i)
             {
                 Console.WriteLine("Try " + i);
-                var startInfo = new ProcessStartInfo(program, args.Length > 0 && args[0] == "b" ? "b" : "a")
+                var startInfo = new ProcessStartInfo(targetProgram, args.Length > 0 && args[0] == "b" ? "b" : "a")
                 {
                     UseShellExecute = false,
                     RedirectStandardOutput = true
                 };
                 var process = Process.Start(startInfo);
-                string line = null;
+                string line;
                 while ((line = process.StandardOutput.ReadLine()) != null)
                 {
                     Console.WriteLine(line);

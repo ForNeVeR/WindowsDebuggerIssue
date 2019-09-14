@@ -12,6 +12,8 @@ void printUsage()
 
 int waitForRuntime(DWORD, DWORD, int);
 
+#define APPLICATION_PATH L"C:\\Windows\\SYSWOW64\\notepad.exe"
+
 void resumeThread(DWORD threadId)
 {
 	auto handle = OpenThread(THREAD_SUSPEND_RESUME, false, threadId);
@@ -25,81 +27,88 @@ void resumeThread(DWORD threadId)
 
 int main(int argc, char* argv[])
 {
-	SetProcessDPIAware();
+	try {
+		SetProcessDPIAware();
 
-	DWORD suspendedProcessPid = 0UL, threadId = 0UL;
-	HANDLE hProcess = nullptr;
-	int timeOutMs = 0;
+		DWORD suspendedProcessPid = 0UL, threadId = 0UL;
+		HANDLE hProcess = nullptr;
+		int timeOutMs = 0;
 
-	if (argc == 4)
-	{
-		suspendedProcessPid = std::stoul(argv[1]);
-		threadId = std::stoul(argv[2]);
-		timeOutMs = std::stoi(argv[3]);
-	}
-	else if (argc == 2 && *(argv[1]) == 'a')
-	{
-		STARTUPINFOW startupInfo = {};
-		PROCESS_INFORMATION processInformation = {};
+		if (argc == 4)
+		{
+			suspendedProcessPid = std::stoul(argv[1]);
+			threadId = std::stoul(argv[2]);
+			timeOutMs = std::stoi(argv[3]);
+		}
+		else if (argc == 2 && *(argv[1]) == 'a')
+		{
+			STARTUPINFOW startupInfo = {};
+			PROCESS_INFORMATION processInformation = {};
 
-		CreateProcessW(L"C:\\work\\NetRuntimeWaiter\\ConsoleApp1\\bin\\Debug\\ConsoleApp1.exe", nullptr, nullptr,
-		               nullptr, false, CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
-		suspendedProcessPid = processInformation.dwProcessId;
-		threadId = processInformation.dwThreadId;
-		timeOutMs = 60000;
+			CreateProcessW(APPLICATION_PATH, nullptr, nullptr,
+			               nullptr, false, CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
+			suspendedProcessPid = processInformation.dwProcessId;
+			threadId = processInformation.dwThreadId;
+			timeOutMs = 60000;
 
-		hProcess = processInformation.hProcess;
-	}
-	else if (argc == 2 && *(argv[1]) == 'b')
-	{
-		STARTUPINFOW startupInfo = {};
-		PROCESS_INFORMATION processInformation = {};
+			hProcess = processInformation.hProcess;
+		}
+		else if (argc == 2 && *(argv[1]) == 'b')
+		{
+			STARTUPINFOW startupInfo = {};
+			PROCESS_INFORMATION processInformation = {};
 
-		CreateProcessW(L"C:\\work\\NetRuntimeWaiter\\ConsoleApp1\\bin\\Debug\\ConsoleApp1.exe", nullptr, nullptr,
-		               nullptr, false, CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
-		threadId = processInformation.dwThreadId;
-		hProcess = processInformation.hProcess;
+			CreateProcessW(APPLICATION_PATH, nullptr, nullptr,
+			               nullptr, false, CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
+			threadId = processInformation.dwThreadId;
+			hProcess = processInformation.hProcess;
+
+			resumeThread(threadId);
+			WaitForSingleObject(hProcess, INFINITE);
+			DWORD exitCode = 0UL;
+			GetExitCodeProcess(hProcess, &exitCode);
+			if (exitCode != 0UL)
+			{
+				MessageBoxW(nullptr, L"GOZ GOZ", L"GOZ", MB_OK);
+			}
+			return exitCode;
+		}
+		else
+		{
+			printUsage();
+			return 11;
+		}
+
+		std::cout << "Process id: " << suspendedProcessPid << "\n"
+			<< "Thread id: " << threadId << "\n"
+			<< "Timeout: " << timeOutMs << std::endl;
+
+		if (!DebugActiveProcess(suspendedProcessPid)) {
+			std::cout << "DebugActiveProcess error: " << GetLastError() << std::endl;
+			return 1;
+		}
 
 		resumeThread(threadId);
-		WaitForSingleObject(hProcess, INFINITE);
-		DWORD exitCode = 0UL;
-		GetExitCodeProcess(hProcess, &exitCode);
-		if (exitCode != 0UL)
+		auto result = waitForRuntime(suspendedProcessPid, threadId, timeOutMs);
+
+		if (!DebugActiveProcessStop(suspendedProcessPid))
 		{
-			MessageBoxW(nullptr, L"GOZ GOZ", L"GOZ", MB_OK);
+			std::cout << "DebugActiveProcessStop error: " << GetLastError() << std::endl;
+			return 3;
 		}
-		return exitCode;
+
+		if (argc == 2 && *(argv[1]) == 'a' && result != -1)
+		{
+			TerminateProcess(hProcess, 0);
+		}
+
+		return result;
 	}
-	else
+	catch (const std::exception &ex)
 	{
-		printUsage();
-		return 11;
+		std::cout << ex.what();
+		return 6;
 	}
-
-	std::cout << "Process id: " << suspendedProcessPid << "\n"
-		<< "Thread id: " << threadId << "\n"
-		<< "Timeout: " << timeOutMs << std::endl;
-
-	if (!DebugActiveProcess(suspendedProcessPid)) {
-		std::cout << "DebugActiveProcess error: " << GetLastError() << std::endl;
-		return 1;
-	}
-
-	resumeThread(threadId);
-	auto result = waitForRuntime(suspendedProcessPid, threadId, timeOutMs);
-	
-	if (!DebugActiveProcessStop(suspendedProcessPid))
-	{
-		std::cout << "DebugActiveProcessStop error: " << GetLastError() << std::endl;
-		return 3;
-	}
-
-	if (argc == 2 && *(argv[1]) == 'a' && result != -1)
-	{
-		TerminateProcess(hProcess, 0);
-	}
-
-	return result;
 }
 
 long long getCurrentTimeMs()
@@ -117,6 +126,10 @@ std::vector<std::byte> readProcessMemory(HANDLE processHandle, void *ptr, unsign
 	{
 		if (read != size)
 			std::cout << "warn: ReadProcessMemory read only " << read << " bytes" << std::endl;
+	}
+	else
+	{
+		std::cout << "RMP ERROR" << std::endl;
 	}
 
 	return result;
@@ -173,7 +186,8 @@ int waitForRuntime(DWORD processId, DWORD threadId, int timeoutMs)
 	HANDLE processHandle = nullptr, threadHandle;
 	while (WaitForDebugEvent(&debugEvent, timeoutMs))
 	{
-		std::cout << "DebugEvent: " << debugEvent.dwDebugEventCode << std::endl;
+		// Sleep(1);
+		std::cout << "DebugEvent: " << debugEvent.dwDebugEventCode << " (thread: " << debugEvent.dwThreadId << ")" << std::endl;
 		switch (debugEvent.dwDebugEventCode)
 		{
 		case EXCEPTION_DEBUG_EVENT: {
@@ -206,8 +220,8 @@ int waitForRuntime(DWORD processId, DWORD threadId, int timeoutMs)
 		case LOAD_DLL_DEBUG_EVENT: {
 			auto dllName = readDllName(processHandle, debugEvent.u.LoadDll);
 			std::wcout << "LOAD_DLL_DEBUG_EVENT: " << dllName << std::endl;
-			if (dllName.size() == wcslen(L"C:\\WINDOWS\\SysWOW64\\MSVCR120_CLR0400.dll")
-				&& _wcsnicmp(dllName.c_str(), L"C:\\WINDOWS\\SysWOW64\\MSVCR120_CLR0400.dll", dllName.size()) == 0)
+			if (dllName.size() == wcslen(L"C:\\WINDOWS\\SysWOW64\\msvcrt.dll")
+				&& _wcsnicmp(dllName.c_str(), L"C:\\WINDOWS\\SysWOW64\\msvcrt.dll", dllName.size()) == 0)
 			{
 				suspendThread(threadId);
 				return 0;
