@@ -5,14 +5,36 @@
 
 #include <Windows.h>
 
-void printUsage()
+constexpr auto processPath = L"C:\\Windows\\SYSWOW64\\notepad.exe";
+PROCESS_INFORMATION startProcessSuspended()
 {
-	std::cout << "Usage: NetRuntimeWaiter <suspended-process-pid> <thread-id> <timeout-milliseconds>" << std::endl;
+	STARTUPINFOW startupInfo = {};
+	PROCESS_INFORMATION processInformation = {};
+
+	const auto result = CreateProcessW(
+		processPath,
+		nullptr,
+		nullptr,
+		nullptr,
+		false,
+		CREATE_SUSPENDED,
+		nullptr,
+		nullptr,
+		&startupInfo,
+		&processInformation);
+	std::cout << "Create process " << processInformation.dwProcessId
+		<< " " << (result ? "success" : "error") << std::endl;
+
+	return processInformation;
 }
 
-int waitForRuntime(DWORD, DWORD, int);
-
-#define APPLICATION_PATH L"C:\\Windows\\SYSWOW64\\notepad.exe"
+void terminateProcess(PROCESS_INFORMATION processInformation)
+{
+	const auto result = TerminateProcess(processInformation.hProcess, EXIT_SUCCESS);
+	CloseHandle(processInformation.hProcess);
+	CloseHandle(processInformation.hThread);
+	std::cout << "Terminate process " << processInformation.dwProcessId << (result ? " success" : " error") << std::endl;
+}
 
 void resumeThread(DWORD threadId)
 {
@@ -25,224 +47,96 @@ void resumeThread(DWORD threadId)
 		throw std::runtime_error(std::string("CloseHandle error ") + std::to_string(GetLastError()));
 }
 
-int main(int argc, char* argv[])
+bool debugProcessLoop()
 {
-	try {
-		SetProcessDPIAware();
-
-		DWORD suspendedProcessPid = 0UL, threadId = 0UL;
-		HANDLE hProcess = nullptr;
-		int timeOutMs = 0;
-
-		if (argc == 4)
-		{
-			suspendedProcessPid = std::stoul(argv[1]);
-			threadId = std::stoul(argv[2]);
-			timeOutMs = std::stoi(argv[3]);
-		}
-		else if (argc == 2 && *(argv[1]) == 'a')
-		{
-			STARTUPINFOW startupInfo = {};
-			PROCESS_INFORMATION processInformation = {};
-
-			CreateProcessW(APPLICATION_PATH, nullptr, nullptr,
-			               nullptr, false, CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
-			suspendedProcessPid = processInformation.dwProcessId;
-			threadId = processInformation.dwThreadId;
-			timeOutMs = 60000;
-
-			hProcess = processInformation.hProcess;
-		}
-		else if (argc == 2 && *(argv[1]) == 'b')
-		{
-			STARTUPINFOW startupInfo = {};
-			PROCESS_INFORMATION processInformation = {};
-
-			CreateProcessW(APPLICATION_PATH, nullptr, nullptr,
-			               nullptr, false, CREATE_SUSPENDED, nullptr, nullptr, &startupInfo, &processInformation);
-			threadId = processInformation.dwThreadId;
-			hProcess = processInformation.hProcess;
-
-			resumeThread(threadId);
-			WaitForSingleObject(hProcess, INFINITE);
-			DWORD exitCode = 0UL;
-			GetExitCodeProcess(hProcess, &exitCode);
-			if (exitCode != 0UL)
-			{
-				MessageBoxW(nullptr, L"GOZ GOZ", L"GOZ", MB_OK);
-			}
-			return exitCode;
-		}
-		else
-		{
-			printUsage();
-			return 11;
-		}
-
-		std::cout << "Process id: " << suspendedProcessPid << "\n"
-			<< "Thread id: " << threadId << "\n"
-			<< "Timeout: " << timeOutMs << std::endl;
-
-		if (!DebugActiveProcess(suspendedProcessPid)) {
-			std::cout << "DebugActiveProcess error: " << GetLastError() << std::endl;
-			return 1;
-		}
-
-		resumeThread(threadId);
-		auto result = waitForRuntime(suspendedProcessPid, threadId, timeOutMs);
-
-		if (!DebugActiveProcessStop(suspendedProcessPid))
-		{
-			std::cout << "DebugActiveProcessStop error: " << GetLastError() << std::endl;
-			return 3;
-		}
-
-		if (argc == 2 && *(argv[1]) == 'a' && result != -1)
-		{
-			TerminateProcess(hProcess, 0);
-		}
-
-		return result;
-	}
-	catch (const std::exception &ex)
-	{
-		std::cout << ex.what();
-		return 6;
-	}
-}
-
-long long getCurrentTimeMs()
-{
-	FILETIME ft = {};
-	GetSystemTimeAsFileTime(&ft);
-	return (long long(ft.dwLowDateTime) + (long long(ft.dwHighDateTime) << 32LL)) / 10000;
-}
-
-std::vector<std::byte> readProcessMemory(HANDLE processHandle, void *ptr, unsigned long size)
-{
-	std::vector<std::byte> result(size);
-	SIZE_T read = 0;
-	if (ReadProcessMemory(processHandle, ptr, result.data(), size, &read))
-	{
-		if (read != size)
-			std::cout << "warn: ReadProcessMemory read only " << read << " bytes" << std::endl;
-	}
-	else
-	{
-		std::cout << "RMP ERROR" << std::endl;
-	}
-
-	return result;
-}
-
-std::wstring readDllName(HANDLE processHandle, LOAD_DLL_DEBUG_INFO debugInfo)
-{
-	if (debugInfo.lpImageName == nullptr) return std::wstring();
-	auto pointer = readProcessMemory(processHandle, debugInfo.lpImageName, sizeof(wchar_t*));
-	if (pointer.empty()) return std::wstring();
-	auto ptr = *(void**)pointer.data();
-	std::wstring result = {};
-	wchar_t lastCharRead = L'\0';
-	do
-	{
-		auto charData = readProcessMemory(processHandle, ptr, debugInfo.fUnicode ? 2 : 1);
-		lastCharRead = debugInfo.fUnicode ? *(wchar_t*)charData.data() : *(char*)charData.data();
-		ptr = (char*)ptr + (debugInfo.fUnicode ? 2 : 1);
-		if (lastCharRead != L'\0') result.push_back(lastCharRead);
-	} while (lastCharRead != L'\0');
-
-	return result;
-}
-
-void suspendThreadHandle(HANDLE threadHandle)
-{
-	if (SuspendThread(threadHandle) == (DWORD)-1)
-		throw std::runtime_error(std::string("SuspendThread error ") + std::to_string(GetLastError()));
-}
-
-void suspendThread(DWORD threadId)
-{
-	auto handle = OpenThread(THREAD_SUSPEND_RESUME, false, threadId);
-	if (handle == nullptr)
-		throw std::runtime_error(std::string("OpenThread error ") + std::to_string(GetLastError()));
-	if (SuspendThread(handle) == (DWORD)-1)
-		throw std::runtime_error(std::string("SuspendThread error ") + std::to_string(GetLastError()));
-	if (CloseHandle(handle) == 0)
-		throw std::runtime_error(std::string("CloseHandle error ") + std::to_string(GetLastError()));
-}
-
-void debugActiveProcessStop(DWORD processId)
-{
-	if (!DebugActiveProcessStop(processId))
-		throw std::runtime_error(std::string("DebugActiveProcessStop error ") + std::to_string(GetLastError()));
-}
-
-int waitForRuntime(DWORD processId, DWORD threadId, int timeoutMs)
-{
-	std::vector<HANDLE> threadHandles {};
-
-	auto startTime = getCurrentTimeMs();
 	DEBUG_EVENT debugEvent = {};
-	HANDLE processHandle = nullptr, threadHandle;
-	while (WaitForDebugEvent(&debugEvent, timeoutMs))
+	auto firstThreadCreated = false;
+	while (WaitForDebugEvent(&debugEvent, INFINITE))
 	{
-		// Sleep(1);
 		std::cout << "DebugEvent: " << debugEvent.dwDebugEventCode << " (thread: " << debugEvent.dwThreadId << ")" << std::endl;
+		auto continueStatus = DBG_CONTINUE;
 		switch (debugEvent.dwDebugEventCode)
 		{
+		case OUTPUT_DEBUG_STRING_EVENT:
+			std::cout << "  OUTPUT_DEBUG_STRING_EVENT" << std::endl;
+			break;
+		case UNLOAD_DLL_DEBUG_EVENT:
+			std::cout << "  UNLOAD_DLL_DEBUG_EVENT" << std::endl;
+	        break;
+		case CREATE_PROCESS_DEBUG_EVENT:
+			std::cout << "  CREATE_PROCESS_DEBUG_EVENT: "
+				<< "ProcessId = " << GetProcessId(debugEvent.u.CreateProcessInfo.hProcess)
+				<< " ThreadId = " << GetThreadId(debugEvent.u.CreateProcessInfo.hThread) << std::endl;
+			CloseHandle(debugEvent.u.CreateProcessInfo.hFile);
+			break;
 		case EXCEPTION_DEBUG_EVENT: {
 			auto exceptionCode = debugEvent.u.Exception.ExceptionRecord.ExceptionCode;
-			std::cout << "EXCEPTION: " << exceptionCode << std::endl;
+			std::cout << "  EXCEPTION: " << exceptionCode << std::endl;
 			if (exceptionCode == EXCEPTION_ACCESS_VIOLATION)
 			{
-				MessageBoxW(nullptr, L"Press OK to suspend all process threads and exit", L"ZOG", MB_OK);
-				for (auto handle : threadHandles)
-					suspendThreadHandle(handle);
-
-				return -1;
+				std::cout << "    This is EXCEPTION_ACCESS_VIOLATION" << std::endl;
+				return false;
 			}
 			break;
 		}
-		case CREATE_PROCESS_DEBUG_EVENT:
-			processHandle = debugEvent.u.CreateProcessInfo.hProcess;
-			threadHandle = debugEvent.u.CreateProcessInfo.hThread;
-			threadHandles.push_back(threadHandle);
-			if (CloseHandle(debugEvent.u.CreateProcessInfo.hFile) == 0)
-				throw std::runtime_error(std::string("CREATE_PROCESS_DEBUG_EVENT->CloseHandle error ") + std::to_string(GetLastError()));
-			break;
 		case CREATE_THREAD_DEBUG_EVENT:
-			{
-				auto threadHandle = debugEvent.u.CreateThread.hThread;
-				std::cout << "[CREATE_THREAD_DEBUG_EVENT] Thread started: " << GetThreadId(threadHandle) << std::endl;
-				threadHandles.push_back(threadHandle);
-				break;
-			}
-		case LOAD_DLL_DEBUG_EVENT: {
-			auto dllName = readDllName(processHandle, debugEvent.u.LoadDll);
-			std::wcout << "LOAD_DLL_DEBUG_EVENT: " << dllName << std::endl;
-			if (dllName.size() == wcslen(L"C:\\WINDOWS\\SysWOW64\\msvcrt.dll")
-				&& _wcsnicmp(dllName.c_str(), L"C:\\WINDOWS\\SysWOW64\\msvcrt.dll", dllName.size()) == 0)
-			{
-				suspendThread(threadId);
-				return 0;
-			}
-			
-			if (CloseHandle(debugEvent.u.LoadDll.hFile) == 0)
-				throw std::runtime_error(std::string("LOAD_DLL_DEBUG_EVENT->CloseHandle error ") + std::to_string(GetLastError()));
+			std::cout << "  CREATE_THREAD_DEBUG_EVENT: " << GetThreadId(debugEvent.u.CreateThread.hThread) << std::endl;
+			firstThreadCreated = true;
+			break;
+		case LOAD_DLL_DEBUG_EVENT:
+			std::cout << "  LOAD_DLL_DEBUG_EVENT" << std::endl;
+			CloseHandle(debugEvent.u.LoadDll.hFile);
+			if (firstThreadCreated)
+				return true; // success
+			break;
+		case EXIT_PROCESS_DEBUG_EVENT:
+			std::cout << "  EXIT_PROCESS_DEBUG_EVENT" << std::endl;
+			// to close all the handles
+			ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, DBG_CONTINUE);
+			return true;
+		default:
+			std::cout << "  (UNKNOWN)" << std::endl;
 			break;
 		}
-		case EXIT_PROCESS_DEBUG_EVENT:
-			if (!ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, DBG_EXCEPTION_NOT_HANDLED))
-				throw std::runtime_error(std::string("EXIT_PROCESS_DEBUG_EVENT->ContinueDebugEvent error ") + std::to_string(GetLastError()));
-			return 4;
+
+		const auto result = ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, DBG_EXCEPTION_NOT_HANDLED);
+		if (!result)
+		{
+			std::cout << "ContinueDebugEvent error" << std::endl;
+			return false;
 		}
+	}
+}
 
-		// timeoutMs = startTime + timeoutMs - getCurrentTimeMs();
-		// TODO if (timeoutMs < 0) return 5;
-
-		if (!ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, DBG_EXCEPTION_NOT_HANDLED))
-			throw std::runtime_error(std::string("ContinueDebugEvent error ") + std::to_string(GetLastError()));
+bool debugProcess(PROCESS_INFORMATION processInformation)
+{
+	if (!DebugActiveProcess(processInformation.dwProcessId))
+	{
+		std::cout << "DebugActiveProcess error: " << GetLastError() << std::endl;
+		return false;
 	}
 
-	return 6;
+	const auto result = debugProcessLoop();
+	if (!DebugActiveProcessStop(processInformation.dwProcessId))
+	{
+		std::cout << "DebugActiveProcessStop error: " << GetLastError() << std::endl;
+	}
+
+	return result;
+}
+
+int main()
+{
+	auto successCount = 0, failureCount = 0;
+	for (auto i = 0; i < 1000; ++i)
+	{
+		const auto processInformation = startProcessSuspended();
+		if (debugProcess(processInformation))
+			++successCount;
+		else
+			++failureCount;
+		terminateProcess(processInformation);
+	}
+
+	std::cout << "All tests finished. Success = " << successCount << ", failure = " << failureCount << std::endl;
 }
